@@ -1,0 +1,905 @@
+{
+  "info": {
+    "_postman_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "name": "Time Entry API",
+    "description": "Test collection for the Remote Leverage HRIS time-tracking API.\n\nPrerequisites:\n  bun run db:push && bun run db:seed\n  bun run dev   →  http://localhost:3000\n\nSeeded data: employee IDs 1 & 2, manager ID 1.\n\nRun requests in order — some depend on IDs saved by earlier test scripts (entryToApproveId, entryToRejectId, etc.). Requires a fresh DB for the overlap test to demonstrate 409.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000", "type": "string" },
+    { "key": "employeeId1", "value": "1", "type": "string" },
+    { "key": "employeeId2", "value": "2", "type": "string" },
+    { "key": "managerId", "value": "1", "type": "string" },
+    { "key": "lastCreatedEntryId", "value": "", "type": "string" },
+    { "key": "entryToApproveId", "value": "", "type": "string" },
+    { "key": "entryToRejectId", "value": "", "type": "string" },
+    { "key": "entryForUnknownApproverTest", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Create Time Entries",
+      "item": [
+        {
+          "name": "Create entry — happy path (201)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const res = pm.response.json();",
+                  "pm.test('Has id', () => pm.expect(res.id).to.be.a('number'));",
+                  "pm.test('Status is pending', () => pm.expect(res.status).to.eql('pending'));",
+                  "if (res.id) pm.collectionVariables.set('lastCreatedEntryId', String(res.id));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-14T09:00:00Z\",\n  \"endTime\": \"2026-06-14T17:30:00Z\",\n  \"project\": \"HRIS-Migration\",\n  \"notes\": \"Schema work\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create entry — end before start (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-14T17:00:00Z\",\n  \"endTime\": \"2026-06-14T09:00:00Z\",\n  \"project\": \"HRIS-Migration\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create entry — equal start and end (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-14T09:00:00Z\",\n  \"endTime\": \"2026-06-14T09:00:00Z\",\n  \"project\": \"HRIS-Migration\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create entry — exceeds 24h (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Error mentions hours', () => pm.expect(pm.response.json().success).to.eql(false));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-14T00:00:00Z\",\n  \"endTime\": \"2026-06-15T01:00:00Z\",\n  \"project\": \"Marathon-Shift\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create entry — overlap with existing (409)",
+          "description": "Uses the same time window as the happy-path request above. Requires that request to have already run.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('Error mentions overlap', () => pm.expect(pm.response.json().error).to.include('overlaps'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-14T10:00:00Z\",\n  \"endTime\": \"2026-06-14T14:00:00Z\",\n  \"project\": \"Overlapping-Project\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create entry — adjacent (no overlap, 201)",
+          "description": "17:30 to 19:00 is adjacent to the happy-path 09:00–17:30 entry. Half-open interval [a,b) means these should NOT conflict.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201 — adjacent entries allowed', () => pm.response.to.have.status(201));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-14T17:30:00Z\",\n  \"endTime\": \"2026-06-14T19:00:00Z\",\n  \"project\": \"HRIS-Migration\",\n  \"notes\": \"Evening catch-up\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create entry — midnight-spanning shift (201)",
+          "description": "Shift from 22:00 to 06:00 next day. Full ISO instants handle this without special-casing.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201 — midnight span allowed', () => pm.response.to.have.status(201));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-14T22:00:00Z\",\n  \"endTime\": \"2026-06-15T06:00:00Z\",\n  \"project\": \"Night-Shift\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId2}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId2}}", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create entry — unknown employee (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Error message', () => pm.expect(pm.response.json().error).to.include('employee'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-14T09:00:00Z\",\n  \"endTime\": \"2026-06-14T17:00:00Z\",\n  \"project\": \"Ghost-Project\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/999/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "999", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create entry — missing required field (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-14T09:00:00Z\",\n  \"endTime\": \"2026-06-14T17:00:00Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. List Time Entries",
+      "item": [
+        {
+          "name": "List all — no filter (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Has entries array', () => pm.expect(res.entries).to.be.an('array'));",
+                  "pm.test('Count matches entries length', () => pm.expect(res.count).to.eql(res.entries.length));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List with date range (200)",
+          "description": "from and to are inclusive. Entry starting at 2026-06-14T09:00:00Z should appear.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Entries filtered', () => pm.expect(pm.response.json().entries).to.be.an('array'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries?from=2026-06-14&to=2026-06-14",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"],
+              "query": [
+                { "key": "from", "value": "2026-06-14" },
+                { "key": "to", "value": "2026-06-14" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List with from only (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries?from=2026-06-01",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"],
+              "query": [
+                { "key": "from", "value": "2026-06-01" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List with invalid range from > to (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries?from=2026-06-14&to=2026-06-01",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"],
+              "query": [
+                { "key": "from", "value": "2026-06-14" },
+                { "key": "to", "value": "2026-06-01" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List — unknown employee (404)",
+          "description": "Unknown employee ID must return 404, not an empty list.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Error mentions employee', () => pm.expect(pm.response.json().error).to.include('employee'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/employees/999/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "999", "time-entries"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Approve & Reject",
+      "item": [
+        {
+          "name": "[Setup] Create entry to approve (employee 1, June 15)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const res = pm.response.json();",
+                  "if (res.id) pm.collectionVariables.set('entryToApproveId', String(res.id));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-15T09:00:00Z\",\n  \"endTime\": \"2026-06-15T17:00:00Z\",\n  \"project\": \"Payroll-Audit\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[Setup] Create entry to reject (employee 1, June 16)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const res = pm.response.json();",
+                  "if (res.id) pm.collectionVariables.set('entryToRejectId', String(res.id));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-16T09:00:00Z\",\n  \"endTime\": \"2026-06-16T13:00:00Z\",\n  \"project\": \"Disputed-Hours\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[Setup] Create entry for unknown-approver test (employee 1, June 17)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const res = pm.response.json();",
+                  "if (res.id) pm.collectionVariables.set('entryForUnknownApproverTest', String(res.id));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startTime\": \"2026-06-17T09:00:00Z\",\n  \"endTime\": \"2026-06-17T17:00:00Z\",\n  \"project\": \"Onboarding\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Approve entry (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Status is approved', () => pm.expect(res.status).to.eql('approved'));",
+                  "pm.test('reviewedAt set', () => pm.expect(res.reviewedAt).to.not.be.null);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverId\": {{managerId}}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries/{{entryToApproveId}}/approve",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries", "{{entryToApproveId}}", "approve"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Reject entry (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Status is rejected', () => pm.expect(res.status).to.eql('rejected'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverId\": {{managerId}}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries/{{entryToRejectId}}/reject",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries", "{{entryToRejectId}}", "reject"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Re-approve already-approved entry (409)",
+          "description": "entryToApproveId was already approved above. Should return 409 with current status.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('Error mentions already approved', () => pm.expect(pm.response.json().error).to.include('already'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverId\": {{managerId}}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries/{{entryToApproveId}}/approve",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries", "{{entryToApproveId}}", "approve"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Flip rejected → approved (409)",
+          "description": "entryToRejectId was rejected above. Should also 409 — no state flip allowed.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('Error mentions already rejected', () => pm.expect(pm.response.json().error).to.include('already'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverId\": {{managerId}}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries/{{entryToRejectId}}/approve",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries", "{{entryToRejectId}}", "approve"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Unknown approver/manager (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Error mentions approver', () => pm.expect(pm.response.json().error).to.include('approver'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverId\": 999\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries/{{entryForUnknownApproverTest}}/approve",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries", "{{entryForUnknownApproverTest}}", "approve"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Entry not found for employee (404)",
+          "description": "Entry ID that doesn't belong to this employee — should be treated as not found.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverId\": {{managerId}}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries/99999/approve",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries", "99999", "approve"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Invalid action param (400)",
+          "description": "Action must be 'approve' or 'reject'. Anything else hits Zod enum validation.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverId\": {{managerId}}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/time-entries/{{entryToApproveId}}/delete",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "time-entries", "{{entryToApproveId}}", "delete"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Weekly Summary",
+      "item": [
+        {
+          "name": "Weekly summary — current week (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('Has totalHours', () => pm.expect(res.totalHours).to.be.a('number'));",
+                  "pm.test('Has approvedHours', () => pm.expect(res.approvedHours).to.be.a('number'));",
+                  "pm.test('Has pendingHours', () => pm.expect(res.pendingHours).to.be.a('number'));",
+                  "pm.test('Has byProject', () => pm.expect(res.byProject).to.be.an('object'));",
+                  "pm.test('Has weekStart', () => pm.expect(res.weekStart).to.be.a('string'));",
+                  "pm.test('totalHours = approved + pending', () => {",
+                  "  pm.expect(Math.round((res.approvedHours + res.pendingHours) * 100)).to.eql(Math.round(res.totalHours * 100));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/weekly-summary",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "weekly-summary"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Weekly summary — specific week param (200)",
+          "description": "week=2026-06-14 → window [2026-06-14, 2026-06-21). Entries created in folder 1 should appear.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('weekStart is 2026-06-14', () => pm.expect(res.weekStart).to.eql('2026-06-14'));",
+                  "pm.test('weekEnd is 2026-06-21', () => pm.expect(res.weekEnd).to.eql('2026-06-21'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/weekly-summary?week=2026-06-14",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "weekly-summary"],
+              "query": [{ "key": "week", "value": "2026-06-14" }]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Weekly summary — rejected entries excluded",
+          "description": "Employee 1's rejected entry (June 16) must not appear in totalHours.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "// Rejected entries must not inflate totalHours",
+                  "pm.test('totalHours = approvedHours + pendingHours (rejected excluded)', () => {",
+                  "  const sum = Math.round((res.approvedHours + res.pendingHours) * 100);",
+                  "  pm.expect(Math.round(res.totalHours * 100)).to.eql(sum);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/weekly-summary?week=2026-06-14",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "weekly-summary"],
+              "query": [{ "key": "week", "value": "2026-06-14" }]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Weekly summary — week with no entries (200, zeroes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.test('totalHours is 0', () => pm.expect(res.totalHours).to.eql(0));",
+                  "pm.test('entryCount is 0', () => pm.expect(res.entryCount).to.eql(0));",
+                  "pm.test('byProject is empty', () => pm.expect(Object.keys(res.byProject).length).to.eql(0));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/employees/{{employeeId1}}/weekly-summary?week=2024-01-01",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "{{employeeId1}}", "weekly-summary"],
+              "query": [{ "key": "week", "value": "2024-01-01" }]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Weekly summary — unknown employee (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Error mentions employee', () => pm.expect(pm.response.json().error).to.include('employee'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/employees/999/weekly-summary",
+              "host": ["{{baseUrl}}"],
+              "path": ["employees", "999", "weekly-summary"]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
