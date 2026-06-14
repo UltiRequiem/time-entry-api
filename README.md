@@ -7,24 +7,19 @@ for payroll.
 See [api.md](api.md) for endpoint reference, request/response shapes, and
 Postman setup.
 
----
-
 ## What I built, and what I deliberately didn't
 
-**Built:** all four endpoints from the brief, backed by a real (file) SQLite
-store via Drizzle, with input validation, a consistent JSON error envelope, and
-the data-integrity checks that matter for payroll. I also implemented `reject`
-as the natural pair to `approve` — the brief only called out approve, but a
-manager needs to be able to dispute an entry too, and the action enum makes the
-endpoint shape clean. The hours/overlap/week math lives in pure functions in
-[src/lib/time-entries.ts](src/lib/time-entries.ts) so the rules are readable and
-unit-testable in isolation.
+**Built:** all four endpoints from the brief, backed by a (file) SQLite store
+via Drizzle, with input validation, a consistent JSON error envelope, and the
+data-integrity checks that matter for payroll. I also implemented `reject` as
+the natural pair to `approve`, the brief only called out approve, but a manager
+needs to be able to dispute an entry too, and the action enum makes the endpoint
+shape clean. The hours/overlap/week math is factored into pure functions so the
+rules are readable and unit-testable in isolation.
 
 **Didn't build, on purpose:** auth, pagination, editing or deleting entries,
 multi-tenancy, and automated tests (see the tests note below). No frontend or
 OpenAPI docs, the brief explicitly de-prioritized those.
-
----
 
 ## Ambiguities I found, and how I resolved them
 
@@ -55,12 +50,7 @@ the brief invited that and none of them are one-way doors:
 
 5. **Timezone.** All boundary math uses `setUTCHours`/`setUTCDate` so a weekly
    window or list range doesn't shift depending on what timezone the server runs
-   in. This was a real bug in the first cut — see the LLM section.
-
-6. **`weekly-summary` verb.** I made it a `GET` (it's a pure read) even though
-   an earlier draft had it as `POST`.
-
----
+   in.
 
 ## Edge cases handled
 
@@ -80,7 +70,7 @@ the brief invited that and none of them are one-way doors:
   `pending` entries can be acted on.
 - **Unknown employee, manager, or entry** → `404` on every route, including the
   case where an entry id doesn't belong to the employee in the URL path.
-- **Self-approval** → impossible by construction (see ambiguity 3 above).
+- **Self-approval** → impossible by construction.
 - **Malformed or invalid input** → `400` with a structured `{ error, issues }`
   array identifying the offending fields, not a raw Zod blob.
 
@@ -101,17 +91,14 @@ the brief invited that and none of them are one-way doors:
 - **Pagination.** The list endpoint returns all matching entries. Fine for this
   store; would need a limit/offset or cursor for production.
 
----
-
 ## How I used LLM tools
 
 I drove this with Claude Code throughout: it generated the schema, route
 handlers, and pure helpers, and I steered the design decisions and reviewed
 every diff.
 
-**Accepted as-is:** The `summarize()` aggregation in
-[src/lib/time-entries.ts](src/lib/time-entries.ts) — split by project, approved
-vs. pending, with a `round2` pass on the accumulated totals to prevent
+**Accepted as-is:** The weekly summary aggregation, split by project, approved
+vs. pending, with a re-rounding pass on accumulated totals to prevent
 floating-point drift. The logic was correct and matched how I'd write it, so it
 stood.
 
@@ -132,8 +119,6 @@ stood.
    Zod v4 uses `PropertyKey[]` (not `string[]`) for issue paths, which the first
    type-safe attempt got wrong — caught by `tsc`.
 
----
-
 ## Tradeoffs I'd revisit for production
 
 - **No transactions around check-then-write.** The overlap and status checks are
@@ -146,19 +131,13 @@ stood.
 - **No pagination.** The list endpoint will return every matching entry forever.
   Needs a limit before the table gets large.
 
----
-
 ## How I decided it was done
 
 All four endpoints work against a real store, and every edge case the brief
-called out — midnight spans, overlaps, end-before-start, re-approval,
-self-approval — has an explicit, tested behavior with the right status code and
-a clean error response. `tsc` passes clean. I ran the Postman collection
-end-to-end (happy path and every error branch). The brief asked for a small
-slice done with judgment, not breadth — once the integrity rules were solid and
-documented, expanding scope would have worked against the point of the exercise.
-
----
+called out, midnight spans, overlaps, end-before-start, re-approval,
+self-approval, has an explicit, tested behavior with the right status code and a
+clean error response. `tsc` passes clean. I ran the Postman collection
+end-to-end (happy path and every error branch).
 
 ## What would scare a teammate most
 
@@ -171,12 +150,9 @@ quietly. The fix is known (transaction + DB constraint); I left it out to keep
 the slice small, but it's the first thing I'd close before this touched real
 money.
 
----
-
 ## A note on tests
 
 I skipped an automated test suite to stay inside the spirit of the slice, but
-the code is shaped for it: all the business rules (`hoursBetween`,
-`intervalsOverlap`, `weekRange`, `summarize`) are pure functions in one file and
-would be quick to cover with a `bun test` file. I verified behavior manually
-with the Postman collection instead.
+the code is shaped for it: all the business rules, duration calculation, overlap
+detection, week windowing, summary aggregation, are pure functions with no side
+effects and would be quick to cover with a unit test file.
