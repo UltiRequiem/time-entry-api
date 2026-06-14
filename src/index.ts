@@ -1,6 +1,6 @@
 import { zValidator } from "@hono/zod-validator";
-import { and, eq, gte, lt, ne } from "drizzle-orm";
-import { Hono } from "hono";
+import { and, eq, gt, gte, lt, ne } from "drizzle-orm";
+import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { trimTrailingSlash } from "hono/trailing-slash";
 import z from "zod";
@@ -12,7 +12,6 @@ import {
 } from "./db/schema";
 import {
   hoursBetween,
-  intervalsOverlap,
   MAX_ENTRY_HOURS,
   summarize,
   weekRange,
@@ -21,6 +20,30 @@ import {
 const app = new Hono();
 
 app.use(trimTrailingSlash());
+
+// Shared hook for all zValidator calls. Returns a consistent { error, issues }
+// envelope instead of the default stringified ZodError blob.
+const validationHook = (
+  result: {
+    success: boolean;
+    // Zod v4 uses PropertyKey[] (string | number | symbol) for issue paths.
+    error?: { issues: { path: PropertyKey[]; message: string }[] };
+  },
+  c: Context,
+) => {
+  if (!result.success) {
+    return c.json(
+      {
+        error: "invalid request",
+        issues: result.error!.issues.map((i) => ({
+          ...(i.path.length && { path: i.path.map(String).join(".") }),
+          message: i.message,
+        })),
+      },
+      400,
+    );
+  }
+};
 
 const employeeIdParam = z.object({
   employeeId: z.coerce.number().int().positive(),
@@ -32,7 +55,7 @@ const employeeIdParam = z.object({
  */
 app.post(
   "/employees/:employeeId/time-entries",
-  zValidator("param", employeeIdParam),
+  zValidator("param", employeeIdParam, validationHook),
   zValidator(
     "json",
     z
@@ -54,6 +77,7 @@ app.post(
           path: ["endTime"],
         },
       ),
+    validationHook,
   ),
   async (c) => {
     const { employeeId } = c.req.valid("param");
@@ -69,15 +93,16 @@ app.post(
     // Data integrity: an employee cannot be in two places at once. Reject an
     // entry that overlaps an existing pending/approved one. Rejected entries
     // are ignored so a corrected re-submission is allowed.
-    const existing = await db.query.timeEntriesTable.findMany({
+    // intervalsOverlap([a,b), [c,d)) ≡ a < d && c < b — pushed to DB so we
+    // never load unbounded history into memory.
+    const clash = await db.query.timeEntriesTable.findFirst({
       where: and(
         eq(timeEntriesTable.employeeId, employeeId),
         ne(timeEntriesTable.status, "rejected"),
+        lt(timeEntriesTable.startTime, endTime),
+        gt(timeEntriesTable.endTime, startTime),
       ),
     });
-    const clash = existing.find((e) =>
-      intervalsOverlap(startTime, endTime, e.startTime, e.endTime),
-    );
     if (clash) {
       throw new HTTPException(409, {
         message: `overlaps existing time entry ${clash.id}`,
@@ -100,7 +125,7 @@ app.post(
  */
 app.get(
   "/employees/:employeeId/time-entries",
-  zValidator("param", employeeIdParam),
+  zValidator("param", employeeIdParam, validationHook),
   zValidator(
     "query",
     z
@@ -112,10 +137,18 @@ app.get(
         message: "from must be on or before to",
         path: ["from"],
       }),
+    validationHook,
   ),
   async (c) => {
     const { employeeId } = c.req.valid("param");
     const { from, to } = c.req.valid("query");
+
+    const employee = await db.query.employeesTable.findFirst({
+      where: eq(employeesTable.id, employeeId),
+    });
+    if (!employee) {
+      throw new HTTPException(404, { message: "employee not found" });
+    }
 
     const filters = [eq(timeEntriesTable.employeeId, employeeId)];
     if (from) filters.push(gte(timeEntriesTable.startTime, from));
@@ -148,12 +181,14 @@ app.post(
       timeEntryId: z.coerce.number().int().positive(),
       action: z.enum(["approve", "reject"]),
     }),
+    validationHook,
   ),
   zValidator(
     "json",
     z.object({
       approverId: z.coerce.number().int().positive(),
     }),
+    validationHook,
   ),
   async (c) => {
     const { employeeId, timeEntryId, action } = c.req.valid("param");
@@ -206,12 +241,13 @@ app.post(
  */
 app.get(
   "/employees/:employeeId/weekly-summary",
-  zValidator("param", employeeIdParam),
+  zValidator("param", employeeIdParam, validationHook),
   zValidator(
     "query",
     z.object({
       week: z.coerce.date().optional(),
     }),
+    validationHook,
   ),
   async (c) => {
     const { employeeId } = c.req.valid("param");
