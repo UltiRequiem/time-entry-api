@@ -1,53 +1,30 @@
 import { zValidator } from "@hono/zod-validator";
 import { and, eq, gt, gte, lt, ne } from "drizzle-orm";
-import { Hono, type Context } from "hono";
+import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { trimTrailingSlash } from "hono/trailing-slash";
-import z from "zod";
-import { db } from "./db";
+
+import { db, schema } from "./db";
 import {
-  employeesTable,
-  managersTable,
-  timeEntriesTable,
-} from "./db/schema";
+  requireEmployee,
+  requireManager,
+  requireTimeEntry,
+} from "./lib/db-helpers";
+import { summarize, weekRange } from "./lib/time-entries";
+import { validationHook } from "./lib/validation";
+
 import {
-  hoursBetween,
-  MAX_ENTRY_HOURS,
-  summarize,
-  weekRange,
-} from "./lib/time-entries";
+  createEntryBody,
+  employeeIdParam,
+  listEntriesQuery,
+  managerActionBody,
+  managerActionParam,
+  weeklySummaryQuery,
+} from "./schemas";
 
 const app = new Hono();
 
 app.use(trimTrailingSlash());
-
-// Shared hook for all zValidator calls. Returns a consistent { error, issues }
-// envelope instead of the default stringified ZodError blob.
-const validationHook = (
-  result: {
-    success: boolean;
-    // Zod v4 uses PropertyKey[] (string | number | symbol) for issue paths.
-    error?: { issues: { path: PropertyKey[]; message: string }[] };
-  },
-  c: Context,
-) => {
-  if (!result.success) {
-    return c.json(
-      {
-        error: "invalid request",
-        issues: result.error!.issues.map((i) => ({
-          ...(i.path.length && { path: i.path.map(String).join(".") }),
-          message: i.message,
-        })),
-      },
-      400,
-    );
-  }
-};
-
-const employeeIdParam = z.object({
-  employeeId: z.coerce.number().int().positive(),
-});
 
 /**
  * POST /employees/:employeeId/time-entries
@@ -56,39 +33,12 @@ const employeeIdParam = z.object({
 app.post(
   "/employees/:employeeId/time-entries",
   zValidator("param", employeeIdParam, validationHook),
-  zValidator(
-    "json",
-    z
-      .object({
-        startTime: z.coerce.date(),
-        endTime: z.coerce.date(),
-        project: z.string().trim().min(1),
-        notes: z.string().trim().optional(),
-      })
-      .refine((data) => data.endTime > data.startTime, {
-        message: "endTime must be after startTime",
-        path: ["endTime"],
-      })
-      .refine(
-        (data) =>
-          hoursBetween(data.startTime, data.endTime) <= MAX_ENTRY_HOURS,
-        {
-          message: `a single entry cannot exceed ${MAX_ENTRY_HOURS} hours`,
-          path: ["endTime"],
-        },
-      ),
-    validationHook,
-  ),
+  zValidator("json", createEntryBody, validationHook),
   async (c) => {
     const { employeeId } = c.req.valid("param");
     const { startTime, endTime, project, notes } = c.req.valid("json");
 
-    const employee = await db.query.employeesTable.findFirst({
-      where: eq(employeesTable.id, employeeId),
-    });
-    if (!employee) {
-      throw new HTTPException(404, { message: "employee not found" });
-    }
+    await requireEmployee(employeeId);
 
     // Data integrity: an employee cannot be in two places at once. Reject an
     // entry that overlaps an existing pending/approved one. Rejected entries
@@ -97,10 +47,10 @@ app.post(
     // never load unbounded history into memory.
     const clash = await db.query.timeEntriesTable.findFirst({
       where: and(
-        eq(timeEntriesTable.employeeId, employeeId),
-        ne(timeEntriesTable.status, "rejected"),
-        lt(timeEntriesTable.startTime, endTime),
-        gt(timeEntriesTable.endTime, startTime),
+        eq(schema.timeEntriesTable.employeeId, employeeId),
+        ne(schema.timeEntriesTable.status, "rejected"),
+        lt(schema.timeEntriesTable.startTime, endTime),
+        gt(schema.timeEntriesTable.endTime, startTime),
       ),
     });
     if (clash) {
@@ -110,7 +60,7 @@ app.post(
     }
 
     const [created] = await db
-      .insert(timeEntriesTable)
+      .insert(schema.timeEntriesTable)
       .values({ employeeId, startTime, endTime, project, notes })
       .returning();
 
@@ -126,38 +76,21 @@ app.post(
 app.get(
   "/employees/:employeeId/time-entries",
   zValidator("param", employeeIdParam, validationHook),
-  zValidator(
-    "query",
-    z
-      .object({
-        from: z.coerce.date().optional(),
-        to: z.coerce.date().optional(),
-      })
-      .refine((q) => !q.from || !q.to || q.from <= q.to, {
-        message: "from must be on or before to",
-        path: ["from"],
-      }),
-    validationHook,
-  ),
+  zValidator("query", listEntriesQuery, validationHook),
   async (c) => {
     const { employeeId } = c.req.valid("param");
     const { from, to } = c.req.valid("query");
 
-    const employee = await db.query.employeesTable.findFirst({
-      where: eq(employeesTable.id, employeeId),
-    });
-    if (!employee) {
-      throw new HTTPException(404, { message: "employee not found" });
-    }
+    await requireEmployee(employeeId);
 
-    const filters = [eq(timeEntriesTable.employeeId, employeeId)];
-    if (from) filters.push(gte(timeEntriesTable.startTime, from));
+    const filters = [eq(schema.timeEntriesTable.employeeId, employeeId)];
+    if (from) filters.push(gte(schema.timeEntriesTable.startTime, from));
     if (to) {
       // Make `to` inclusive of the whole day by going to the next UTC midnight.
       const toExclusive = new Date(to);
       toExclusive.setUTCHours(0, 0, 0, 0);
       toExclusive.setUTCDate(toExclusive.getUTCDate() + 1);
-      filters.push(lt(timeEntriesTable.startTime, toExclusive));
+      filters.push(lt(schema.timeEntriesTable.startTime, toExclusive));
     }
 
     const entries = await db.query.timeEntriesTable.findMany({
@@ -175,44 +108,16 @@ app.get(
  */
 app.post(
   "/employees/:employeeId/time-entries/:timeEntryId/:action",
-  zValidator(
-    "param",
-    employeeIdParam.extend({
-      timeEntryId: z.coerce.number().int().positive(),
-      action: z.enum(["approve", "reject"]),
-    }),
-    validationHook,
-  ),
-  zValidator(
-    "json",
-    z.object({
-      approverId: z.coerce.number().int().positive(),
-    }),
-    validationHook,
-  ),
+  zValidator("param", managerActionParam, validationHook),
+  zValidator("json", managerActionBody, validationHook),
   async (c) => {
     const { employeeId, timeEntryId, action } = c.req.valid("param");
     const { approverId } = c.req.valid("json");
 
-    const entry = await db.query.timeEntriesTable.findFirst({
-      where: and(
-        eq(timeEntriesTable.id, timeEntryId),
-        eq(timeEntriesTable.employeeId, employeeId),
-      ),
-    });
-    if (!entry) {
-      throw new HTTPException(404, { message: "time entry not found" });
-    }
-
-    // The reviewer must be a real manager. (Self-approval is impossible by
-    // construction: approverId points at the managers table, the entry owner
-    // at the employees table — separate id spaces.)
-    const manager = await db.query.managersTable.findFirst({
-      where: eq(managersTable.id, approverId),
-    });
-    if (!manager) {
-      throw new HTTPException(404, { message: "approver not found" });
-    }
+    const entry = await requireTimeEntry(timeEntryId, employeeId);
+    // Self-approval is impossible by construction: approverId points at the
+    // managers table, the entry owner at the employees table — separate id spaces.
+    await requireManager(approverId);
 
     // An entry can only be acted on while pending. Re-approving or flipping an
     // already-decided entry would silently rewrite payroll history, so we
@@ -225,9 +130,9 @@ app.post(
 
     const newStatus = action === "approve" ? "approved" : "rejected";
     const [updated] = await db
-      .update(timeEntriesTable)
+      .update(schema.timeEntriesTable)
       .set({ status: newStatus, approverId, reviewedAt: new Date() })
-      .where(eq(timeEntriesTable.id, timeEntryId))
+      .where(eq(schema.timeEntriesTable.id, timeEntryId))
       .returning();
 
     return c.json(updated);
@@ -242,31 +147,20 @@ app.post(
 app.get(
   "/employees/:employeeId/weekly-summary",
   zValidator("param", employeeIdParam, validationHook),
-  zValidator(
-    "query",
-    z.object({
-      week: z.coerce.date().optional(),
-    }),
-    validationHook,
-  ),
+  zValidator("query", weeklySummaryQuery, validationHook),
   async (c) => {
     const { employeeId } = c.req.valid("param");
     const { week } = c.req.valid("query");
 
-    const employee = await db.query.employeesTable.findFirst({
-      where: eq(employeesTable.id, employeeId),
-    });
-    if (!employee) {
-      throw new HTTPException(404, { message: "employee not found" });
-    }
+    await requireEmployee(employeeId);
 
     const { start, end } = weekRange(week ?? new Date());
 
     const entries = await db.query.timeEntriesTable.findMany({
       where: and(
-        eq(timeEntriesTable.employeeId, employeeId),
-        gte(timeEntriesTable.startTime, start),
-        lt(timeEntriesTable.startTime, end),
+        eq(schema.timeEntriesTable.employeeId, employeeId),
+        gte(schema.timeEntriesTable.startTime, start),
+        lt(schema.timeEntriesTable.startTime, end),
       ),
     });
 

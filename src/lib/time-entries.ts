@@ -74,8 +74,8 @@ export function summarize(entries: TimeEntry[]): WeeklySummary {
     const hours = hoursBetween(entry.startTime, entry.endTime);
     summary.totalHours += hours;
     summary.entryCount += 1;
-    summary.byProject[entry.project] =
-      (summary.byProject[entry.project] ?? 0) + hours;
+    summary.byProject[entry.project] = (summary.byProject[entry.project] ?? 0) +
+      hours;
 
     if (entry.status === "approved") summary.approvedHours += hours;
     else summary.pendingHours += hours;
