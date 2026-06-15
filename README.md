@@ -54,6 +54,10 @@ the brief invited that and none of them are one-way doors:
 
 ## Edge cases handled
 
+- **Shifts spanning midnight** → handled naturally. Entries are stored as two
+  full timestamps, not a date plus wall-clock times, so a 10pm–2am shift is just
+  an entry whose end falls on the next calendar date. No special-casing needed,
+  and it works correctly regardless of the employee's timezone.
 - **End before or equal to start** → `400`. Zero or negative duration is never
   valid work.
 - **Entry longer than 24h** → `400`. A >1-day entry is almost always a typo
@@ -71,17 +75,16 @@ the brief invited that and none of them are one-way doors:
 - **Unknown employee, manager, or entry** → `404` on every route, including the
   case where an entry id doesn't belong to the employee in the URL path.
 - **Self-approval** → impossible by construction.
+- **Concurrent creates / double-submit** → safe. The overlap check and insert
+  run inside a single SQLite `IMMEDIATE` transaction, which acquires the write
+  lock at `BEGIN` time. A second concurrent request blocks until the first
+  commits, so two requests can never both pass the overlap check. Same pattern
+  covers the approve/reject status check.
 - **Malformed or invalid input** → `400` with a structured `{ error, issues }`
   array identifying the offending fields, not a raw Zod blob.
 
 ## Edge cases I consciously skipped
 
-- **Concurrency / double-submit.** Two simultaneous creates could both pass the
-  overlap check and both insert (TOCTOU race); two approvals could race on the
-  status check. The bulletproof fix is a transaction wrapping the
-  check-then-write with a DB-level exclusion constraint as the real backstop.
-  Out of scope for this slice, but it is the first thing I would close before
-  this touched real money.
 - **Future-dated entries** are allowed. Logging planned time is plausible and
   the brief didn't say otherwise.
 - **Entries spanning a week boundary** are counted whole in the week of their
@@ -121,15 +124,16 @@ stood.
 
 ## Tradeoffs I'd revisit for production
 
-- **No transactions around check-then-write.** The overlap and status checks are
-  read-then-write and not atomic. Production needs them inside a transaction
-  with a uniqueness/exclusion constraint as the real backstop.
 - **24h cap and overlap rules are hard-coded.** In reality these are
   org/jurisdiction config, not constants in a helper file.
 - **No audit trail beyond `reviewedAt` and `approverId`.** Payroll disputes want
   a full history of who changed what and when.
 - **No pagination.** The list endpoint will return every matching entry forever.
   Needs a limit before the table gets large.
+- **SQLite single-writer.** `IMMEDIATE` transactions serialize writes correctly,
+  but SQLite's single global write lock becomes a bottleneck under real
+  concurrent load. A production service would want Postgres with row-level
+  locking and an exclusion constraint as a final backstop against overlaps.
 
 ## How I decided it was done
 
@@ -141,14 +145,12 @@ end-to-end (happy path and every error branch).
 
 ## What would scare a teammate most
 
-The **check-then-write race**. The overlap and "still pending?" guards are
-correct under sequential calls but not atomic, so under real concurrency two
-requests can both pass the check and write. It's the gap between "looks correct
-in a demo" and "correct under load," and it's invisible until two requests land
-in the same millisecond — exactly the kind of thing that corrupts payroll
-quietly. The fix is known (transaction + DB constraint); I left it out to keep
-the slice small, but it's the first thing I'd close before this touched real
-money.
+The **absent audit trail**. `reviewedAt` and `approverId` capture the latest
+decision, but nothing before it — no record of the original submission time, no
+log of who changed what and from what state. In payroll that's a serious gap:
+disputes, regulatory audits, and correction flows all need "show me the full
+history of this entry." Right now, any update silently overwrites the prior
+state. A proper audit log or event-sourced append-only table would close this.
 
 ## A note on tests
 

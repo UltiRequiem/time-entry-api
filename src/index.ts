@@ -5,11 +5,7 @@ import { HTTPException } from "hono/http-exception";
 import { trimTrailingSlash } from "hono/trailing-slash";
 
 import { db, schema } from "./db";
-import {
-  requireEmployee,
-  requireManager,
-  requireTimeEntry,
-} from "./lib/db-helpers";
+import { requireEmployee, requireManager } from "./lib/db-helpers";
 import { summarize, weekRange } from "./lib/time-entries";
 import { validationHook } from "./lib/validation";
 
@@ -40,29 +36,29 @@ app.post(
 
     await requireEmployee(employeeId);
 
-    // Data integrity: an employee cannot be in two places at once. Reject an
-    // entry that overlaps an existing pending/approved one. Rejected entries
-    // are ignored so a corrected re-submission is allowed.
-    // intervalsOverlap([a,b), [c,d)) ≡ a < d && c < b — pushed to DB so we
-    // never load unbounded history into memory.
-    const clash = await db.query.timeEntriesTable.findFirst({
-      where: and(
-        eq(schema.timeEntriesTable.employeeId, employeeId),
-        ne(schema.timeEntriesTable.status, "rejected"),
-        lt(schema.timeEntriesTable.startTime, endTime),
-        gt(schema.timeEntriesTable.endTime, startTime),
-      ),
-    });
-    if (clash) {
-      throw new HTTPException(409, {
-        message: `overlaps existing time entry ${clash.id}`,
+    // BEGIN IMMEDIATE acquires the write lock up front so no two transactions
+    // can interleave between the overlap check and the insert (TOCTOU fix).
+    // intervalsOverlap([a,b), [c,d)) ≡ a < d && c < b.
+    const created = await db.transaction(async (tx) => {
+      const clash = await tx.query.timeEntriesTable.findFirst({
+        where: and(
+          eq(schema.timeEntriesTable.employeeId, employeeId),
+          ne(schema.timeEntriesTable.status, "rejected"),
+          lt(schema.timeEntriesTable.startTime, endTime),
+          gt(schema.timeEntriesTable.endTime, startTime),
+        ),
       });
-    }
-
-    const [created] = await db
-      .insert(schema.timeEntriesTable)
-      .values({ employeeId, startTime, endTime, project, notes })
-      .returning();
+      if (clash) {
+        throw new HTTPException(409, {
+          message: `overlaps existing time entry ${clash.id}`,
+        });
+      }
+      const [row] = await tx
+        .insert(schema.timeEntriesTable)
+        .values({ employeeId, startTime, endTime, project, notes })
+        .returning();
+      return row;
+    }, { behavior: "immediate" });
 
     return c.json(created, 201);
   },
@@ -114,26 +110,35 @@ app.post(
     const { employeeId, timeEntryId, action } = c.req.valid("param");
     const { approverId } = c.req.valid("json");
 
-    const entry = await requireTimeEntry(timeEntryId, employeeId);
+    // Manager existence is stable — check before taking the write lock.
     // Self-approval is impossible by construction: approverId points at the
     // managers table, the entry owner at the employees table — separate id spaces.
     await requireManager(approverId);
 
-    // An entry can only be acted on while pending. Re-approving or flipping an
-    // already-decided entry would silently rewrite payroll history, so we
-    // reject it and let the caller see the current state.
-    if (entry.status !== "pending") {
-      throw new HTTPException(409, {
-        message: `time entry is already ${entry.status}`,
-      });
-    }
-
+    // BEGIN IMMEDIATE ensures the status check and update are atomic (TOCTOU fix).
     const newStatus = action === "approve" ? "approved" : "rejected";
-    const [updated] = await db
-      .update(schema.timeEntriesTable)
-      .set({ status: newStatus, approverId, reviewedAt: new Date() })
-      .where(eq(schema.timeEntriesTable.id, timeEntryId))
-      .returning();
+    const updated = await db.transaction(async (tx) => {
+      const entry = await tx.query.timeEntriesTable.findFirst({
+        where: and(
+          eq(schema.timeEntriesTable.id, timeEntryId),
+          eq(schema.timeEntriesTable.employeeId, employeeId),
+        ),
+      });
+      if (!entry) throw new HTTPException(404, { message: "time entry not found" });
+      // An entry can only be acted on while pending. Re-approving or flipping an
+      // already-decided entry would silently rewrite payroll history.
+      if (entry.status !== "pending") {
+        throw new HTTPException(409, {
+          message: `time entry is already ${entry.status}`,
+        });
+      }
+      const [row] = await tx
+        .update(schema.timeEntriesTable)
+        .set({ status: newStatus, approverId, reviewedAt: new Date() })
+        .where(eq(schema.timeEntriesTable.id, timeEntryId))
+        .returning();
+      return row;
+    }, { behavior: "immediate" });
 
     return c.json(updated);
   },
