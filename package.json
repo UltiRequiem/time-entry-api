@@ -7,7 +7,7 @@
     "db:seed": "bun run src/db/seed.ts"
   },
   "dependencies": {
-    "@hono/zod-validator": "^0.8.0",
+    "@hono/zod-validator": "^0.9.1",
     "@libsql/client": "^0.18.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.25",
